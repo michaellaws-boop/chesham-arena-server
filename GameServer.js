@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 const TICK_RATE = 20;
 const TICK_INTERVAL = 1000 / TICK_RATE;
 const MAX_PLAYERS = 10;
+const ROUNDS_TO_WIN = 3;
 
 const TEAMS = { A: 'teamA', B: 'teamB' };
 
@@ -14,7 +15,7 @@ const WEAPONS = {
   PISTOL: { name: 'Pistol', slot: 1, damage: 35, range: 50 },
   KNIFE: { name: 'Knife', slot: 2, damage: 110, range: 2.5 },
   GRENADE: { name: 'Frag Grenade', slot: 3, damage: 100, range: 15 },
-  SNIPER: { name: 'Sniper Rifle', slot: 4, damage: 90, range: 150 },
+  SNIPER: { name: 'Sniper Rifle', slot: 4, damage: 50, range: 150 },
 };
 
 function calculateDamage(baseDamage, distance, maxRange, isSniper = false) {
@@ -25,15 +26,61 @@ function calculateDamage(baseDamage, distance, maxRange, isSniper = false) {
 export class GameServer {
   constructor(io) {
     this.io = io;
-    this.lobbies = new Map(); // lobbyId -> lobby state
-    this.playerLobbyMap = new Map(); // socketId -> lobbyId
+    this.lobbies = new Map();
+    this.playerLobbyMap = new Map();
 
     this.io.on('connection', (socket) => this.onConnection(socket));
-
-    // Game loop
     setInterval(() => this.tick(), TICK_INTERVAL);
-
     console.log('[GameServer] Initialized');
+  }
+
+  // Handle a kill: update scores, emit events, respawn BOTH players for new round
+  handleKill(lobbyId, lobby, shooter, target, weaponLabel) {
+    target.health = 0;
+    target.alive = false;
+    target.deaths++;
+    shooter.kills++;
+    lobby.scores[shooter.team]++;
+
+    this.io.to(lobbyId).emit('player_killed', {
+      killerId: shooter.id,
+      killerName: shooter.name,
+      victimId: target.id,
+      victimName: target.name,
+      weapon: weaponLabel,
+      scores: lobby.scores,
+    });
+
+    // Check for match win
+    if (lobby.scores[shooter.team] >= ROUNDS_TO_WIN) {
+      lobby.state = 'ended';
+      this.io.to(lobbyId).emit('match_over', {
+        winnerId: shooter.id,
+        winnerName: shooter.name,
+        winnerTeam: shooter.team,
+        scores: lobby.scores,
+      });
+      console.log(`[Lobby ${lobbyId}] Match over! ${shooter.name} wins ${lobby.scores[TEAMS.A]}-${lobby.scores[TEAMS.B]}`);
+      return;
+    }
+
+    // Respawn BOTH players after 2 seconds for next round
+    setTimeout(() => {
+      for (const [id, p] of lobby.players) {
+        const spawn = p.team === TEAMS.A ? SPAWN_A : SPAWN_B;
+        p.position = { ...spawn };
+        p.health = 100;
+        p.alive = true;
+        this.io.to(lobbyId).emit('player_respawn', {
+          id: p.id,
+          position: p.position,
+        });
+      }
+      this.io.to(lobbyId).emit('round_start', {
+        round: lobby.scores[TEAMS.A] + lobby.scores[TEAMS.B] + 1,
+        scores: lobby.scores,
+      });
+    }, 2000);
   }
 
   onConnection(socket) {
@@ -44,18 +91,15 @@ export class GameServer {
       this.lobbies.set(lobbyId, {
         id: lobbyId,
         players: new Map(),
-        state: 'waiting', // waiting | playing | ended
+        state: 'waiting',
         scores: { [TEAMS.A]: 0, [TEAMS.B]: 0 },
-        scoreLimit: 30,
-        timeLimit: 5 * 60 * 1000,
         startTime: null,
       });
       console.log(`[Lobby] Created: ${lobbyId}`);
       callback({ lobbyId });
     });
 
-    socket.on('join_lobby', (data, callback) => {
-      const { lobbyId, playerName } = data;
+    socket.on('join_lobby', ({ lobbyId, playerName }, callback) => {
       const lobby = this.lobbies.get(lobbyId);
 
       if (!lobby) {
@@ -67,7 +111,6 @@ export class GameServer {
         return;
       }
 
-      // Auto-balance teams
       let teamACount = 0;
       let teamBCount = 0;
       for (const p of lobby.players.values()) {
@@ -85,7 +128,7 @@ export class GameServer {
         rotation: { x: 0, y: 0 },
         health: 100,
         alive: true,
-        weapon: 0, // current weapon slot
+        weapon: 0,
         kills: 0,
         deaths: 0,
         lastInput: null,
@@ -95,7 +138,6 @@ export class GameServer {
       this.playerLobbyMap.set(socket.id, lobbyId);
       socket.join(lobbyId);
 
-      // Tell everyone about new player
       socket.to(lobbyId).emit('player_joined', {
         id: player.id,
         name: player.name,
@@ -103,7 +145,6 @@ export class GameServer {
         position: player.position,
       });
 
-      // Send full state to joining player
       const existingPlayers = [];
       for (const [id, p] of lobby.players) {
         if (id !== socket.id) {
@@ -117,14 +158,10 @@ export class GameServer {
       }
 
       callback({
-        success: true,
-        player,
+        player: { id: player.id, name: player.name, team: player.team },
         existingPlayers,
-        scores: lobby.scores,
-        state: lobby.state,
+        lobbyId,
       });
-
-      console.log(`[Lobby ${lobbyId}] ${player.name} joined ${team} (${lobby.players.size} players)`);
     });
 
     socket.on('player_input', (data) => {
@@ -135,7 +172,6 @@ export class GameServer {
       const player = lobby.players.get(socket.id);
       if (!player) return;
 
-      // Authoritative position updates from client (trust for now, add server auth later)
       if (data.position) {
         player.position = data.position;
       }
@@ -148,7 +184,7 @@ export class GameServer {
       const lobbyId = this.playerLobbyMap.get(socket.id);
       if (!lobbyId) return;
       const lobby = this.lobbies.get(lobbyId);
-      if (!lobby) return;
+      if (!lobby || lobby.state === 'ended') return;
       const shooter = lobby.players.get(socket.id);
       if (!shooter || !shooter.alive) return;
 
@@ -156,43 +192,18 @@ export class GameServer {
       const weaponKey = weaponKeys[data.weapon] || 'AR';
       const weapon = WEAPONS[weaponKey];
 
-      // Grenade AoE — multiple hit players with distances
+      // Grenade AoE
       if (data.grenadeAoE && Array.isArray(data.hitPlayers)) {
         for (const hp of data.hitPlayers) {
           const target = lobby.players.get(hp.id);
           if (!target || !target.alive || target.team === shooter.team) continue;
-          const damage = calculateDamage(weapon.damage, hp.distance, weapon.range, weaponKey === 'SNIPER');
+          const damage = calculateDamage(weapon.damage, hp.distance, weapon.range, false);
           if (damage <= 0) continue;
 
           target.health -= damage;
 
           if (target.health <= 0) {
-            target.health = 0;
-            target.alive = false;
-            target.deaths++;
-            shooter.kills++;
-            lobby.scores[shooter.team]++;
-
-            this.io.to(lobbyId).emit('player_killed', {
-              killerId: shooter.id,
-              killerName: shooter.name,
-              victimId: target.id,
-              victimName: target.name,
-              weapon: weapon.name,
-            });
-
-            setTimeout(() => {
-              if (lobby.players.has(target.id)) {
-                const spawn = target.team === TEAMS.A ? SPAWN_A : SPAWN_B;
-                target.position = { ...spawn };
-                target.health = 100;
-                target.alive = true;
-                this.io.to(lobbyId).emit('player_respawn', {
-                  id: target.id,
-                  position: target.position,
-                });
-              }
-            }, 3000);
+            this.handleKill(lobbyId, lobby, shooter, target, weapon.name);
           } else {
             this.io.to(target.id).emit('damage', {
               health: target.health,
@@ -202,7 +213,7 @@ export class GameServer {
         }
       }
 
-      // Raycast hit check — client sends hit player ID and distance
+      // Raycast hit
       else if (data.hitPlayerId && data.distance !== undefined) {
         const target = lobby.players.get(data.hitPlayerId);
         if (target && target.alive && target.team !== shooter.team) {
@@ -210,7 +221,7 @@ export class GameServer {
           let isBackstab = false;
           let isHeadshot = false;
 
-          // Backstab: knife from behind within melee range = instant kill
+          // Backstab
           if (weaponKey === 'KNIFE' && data.distance <= weapon.range && data.direction && target.rotation) {
             const atkX = data.direction.x || 0;
             const atkZ = data.direction.z || 0;
@@ -224,10 +235,10 @@ export class GameServer {
             }
           }
 
-          // Headshot: AR/Pistol get 1.5x, Sniper gets instant kill
+          // Headshot
           if (!isBackstab && data.headshot && (weaponKey === 'AR' || weaponKey === 'PISTOL' || weaponKey === 'SNIPER')) {
             if (weaponKey === 'SNIPER') {
-              damage = 9999; // sniper headshot = instant kill
+              damage = 9999;
             } else {
               damage *= 1.5;
             }
@@ -237,34 +248,8 @@ export class GameServer {
           target.health -= damage;
 
           if (target.health <= 0) {
-            target.health = 0;
-            target.alive = false;
-            target.deaths++;
-            shooter.kills++;
-            lobby.scores[shooter.team]++;
-
             const killWeapon = isBackstab ? 'BACKSTAB' : (isHeadshot ? weapon.name + ' HEADSHOT' : weapon.name);
-            this.io.to(lobbyId).emit('player_killed', {
-              killerId: shooter.id,
-              killerName: shooter.name,
-              victimId: target.id,
-              victimName: target.name,
-              weapon: killWeapon,
-            });
-
-            // Respawn after 3 seconds
-            setTimeout(() => {
-              if (lobby.players.has(target.id)) {
-                const spawn = target.team === TEAMS.A ? SPAWN_A : SPAWN_B;
-                target.position = { ...spawn };
-                target.health = 100;
-                target.alive = true;
-                this.io.to(lobbyId).emit('player_respawn', {
-                  id: target.id,
-                  position: target.position,
-                });
-              }
-            }, 3000);
+            this.handleKill(lobbyId, lobby, shooter, target, killWeapon);
           } else {
             this.io.to(target.id).emit('damage', {
               health: target.health,
@@ -274,7 +259,7 @@ export class GameServer {
         }
       }
 
-      // Broadcast shot visual to others
+      // Broadcast shot visual
       socket.to(lobbyId).emit('player_shot', {
         id: socket.id,
         weapon: data.weapon,
@@ -286,7 +271,6 @@ export class GameServer {
     socket.on('throw_grenade', (data) => {
       const lobbyId = this.playerLobbyMap.get(socket.id);
       if (!lobbyId) return;
-      // Broadcast grenade to all in lobby
       this.io.to(lobbyId).emit('grenade_thrown', {
         id: socket.id,
         position: data.position,
@@ -331,7 +315,6 @@ export class GameServer {
     for (const [lobbyId, lobby] of this.lobbies) {
       if (lobby.players.size === 0) continue;
 
-      // Build state snapshot
       const players = [];
       for (const p of lobby.players.values()) {
         players.push({
@@ -350,26 +333,6 @@ export class GameServer {
         scores: lobby.scores,
         serverTime: Date.now(),
       });
-
-      // Check win conditions
-      if (lobby.state === 'playing') {
-        const elapsed = Date.now() - lobby.startTime;
-        if (
-          lobby.scores[TEAMS.A] >= lobby.scoreLimit ||
-          lobby.scores[TEAMS.B] >= lobby.scoreLimit ||
-          elapsed >= lobby.timeLimit
-        ) {
-          const winner =
-            lobby.scores[TEAMS.A] > lobby.scores[TEAMS.B]
-              ? TEAMS.A
-              : lobby.scores[TEAMS.B] > lobby.scores[TEAMS.A]
-                ? TEAMS.B
-                : 'draw';
-          lobby.state = 'ended';
-          this.io.to(lobbyId).emit('game_over', { winner, scores: lobby.scores });
-          console.log(`[Lobby ${lobbyId}] Game over! Winner: ${winner}`);
-        }
-      }
     }
   }
 }
