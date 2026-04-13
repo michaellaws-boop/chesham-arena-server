@@ -16,10 +16,11 @@ const WEAPONS = {
   KNIFE: { name: 'Knife', slot: 2, damage: 110, range: 2.5 },
   GRENADE: { name: 'Frag Grenade', slot: 3, damage: 100, range: 15 },
   SNIPER: { name: 'Sniper Rifle', slot: 4, damage: 50, range: 150 },
+  LASER: { name: 'Laser Rifle', slot: 5, damage: 40, range: 120 },
 };
 
-function calculateDamage(baseDamage, distance, maxRange, isSniper = false) {
-  if (isSniper) return baseDamage; // no falloff
+function calculateDamage(baseDamage, distance, maxRange, noFalloff = false) {
+  if (noFalloff) return baseDamage; // sniper/laser — no falloff
   return baseDamage * Math.max(0, 1 - distance / maxRange);
 }
 
@@ -188,11 +189,11 @@ export class GameServer {
       const lobbyId = this.playerLobbyMap.get(socket.id);
       if (!lobbyId) return;
       const lobby = this.lobbies.get(lobbyId);
-      if (!lobby || lobby.state === 'ended') return;
+      if (!lobby || lobby.state !== 'playing') return;
       const shooter = lobby.players.get(socket.id);
       if (!shooter || !shooter.alive) return;
 
-      const weaponKeys = ['AR', 'PISTOL', 'KNIFE', 'GRENADE', 'SNIPER'];
+      const weaponKeys = ['AR', 'PISTOL', 'KNIFE', 'GRENADE', 'SNIPER', 'LASER'];
       const weaponKey = weaponKeys[data.weapon] || 'AR';
       const weapon = WEAPONS[weaponKey];
 
@@ -221,9 +222,10 @@ export class GameServer {
       else if (data.hitPlayerId && data.distance !== undefined) {
         const target = lobby.players.get(data.hitPlayerId);
         if (target && target.alive && target.team !== shooter.team) {
-          let damage = calculateDamage(weapon.damage, data.distance, weapon.range, weaponKey === 'SNIPER');
+          let damage = calculateDamage(weapon.damage, data.distance, weapon.range, weaponKey === 'SNIPER' || weaponKey === 'LASER');
           let isBackstab = false;
           let isHeadshot = false;
+          console.log(`[Hit] ${shooter.name} → ${target.name} with ${weaponKey} at ${data.distance.toFixed(1)}m, base dmg=${damage.toFixed(1)}, target hp=${target.health}`);
 
           // Backstab
           if (weaponKey === 'KNIFE' && data.distance <= weapon.range && data.direction && target.rotation) {
@@ -250,9 +252,11 @@ export class GameServer {
           }
 
           target.health -= damage;
+          console.log(`[Damage] ${target.name} took ${damage.toFixed(1)} dmg (${isBackstab ? 'BACKSTAB' : isHeadshot ? 'HEADSHOT' : 'body'}), hp now ${target.health.toFixed(1)}`);
 
           if (target.health <= 0) {
             const killWeapon = isBackstab ? 'BACKSTAB' : (isHeadshot ? weapon.name + ' HEADSHOT' : weapon.name);
+            console.log(`[Kill] ${shooter.name} killed ${target.name} with ${killWeapon}`);
             this.handleKill(lobbyId, lobby, shooter, target, killWeapon);
           } else {
             this.io.to(target.id).emit('damage', {
