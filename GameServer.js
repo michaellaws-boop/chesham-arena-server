@@ -20,7 +20,7 @@ const SPAWN_POINTS = [
   { x: -50, y: 4.2, z: -60 },  // churchyard hill
   { x: 40, y: 1.7, z: -40 },   // far east corner
   { x: -55, y: 1.7, z: 12 },   // park near lake
-  { x: -75, y: 3.5, z: 14 },   // park far side (playground)
+  { x: -75, y: 1.7, z: 14 },   // park far side (playground)
 ];
 
 function getRandomSpawnFarFrom(otherPos) {
