@@ -7,8 +7,32 @@ const ROUNDS_TO_WIN = 3;
 
 const TEAMS = { A: 'teamA', B: 'teamB' };
 
-const SPAWN_A = { x: 0, y: 1, z: -48 };
-const SPAWN_B = { x: 0, y: 1, z: 48 };
+// Spawn points spread around the map — pick random ones, far from opponent
+const SPAWN_POINTS = [
+  { x: -10, y: 1.7, z: -48 },  // north end of High St
+  { x: -10, y: 1.7, z: 45 },   // south end of High St
+  { x: 35, y: 1.7, z: -20 },   // east side near East St
+  { x: -20, y: 1.7, z: -10 },  // west side shops
+  { x: -10, y: 1.7, z: 10 },   // market square area
+  { x: 30, y: 1.7, z: 20 },    // east side south
+  { x: -20, y: 1.7, z: -40 },  // near Church St
+  { x: 20, y: 1.7, z: 40 },    // Red Lion St area
+  { x: -50, y: 4.2, z: -60 },  // churchyard hill
+  { x: 40, y: 1.7, z: -40 },   // far east corner
+];
+
+function getRandomSpawnFarFrom(otherPos) {
+  if (!otherPos) {
+    return { ...SPAWN_POINTS[Math.floor(Math.random() * SPAWN_POINTS.length)] };
+  }
+  // Sort by distance from opponent (descending) and pick from the top half
+  const sorted = SPAWN_POINTS
+    .map(sp => ({ ...sp, dist: Math.sqrt((sp.x - otherPos.x) ** 2 + (sp.z - otherPos.z) ** 2) }))
+    .sort((a, b) => b.dist - a.dist);
+  const candidates = sorted.slice(0, Math.ceil(sorted.length / 2));
+  const pick = candidates[Math.floor(Math.random() * candidates.length)];
+  return { x: pick.x, y: pick.y, z: pick.z };
+}
 
 const WEAPONS = {
   AR: { name: 'Assault Rifle', slot: 0, damage: 22, range: 80 },
@@ -67,8 +91,11 @@ export class GameServer {
 
     // Respawn BOTH players after 2 seconds for next round
     setTimeout(() => {
-      for (const [id, p] of lobby.players) {
-        const spawn = p.team === TEAMS.A ? SPAWN_A : SPAWN_B;
+      // Collect all player positions first, then spawn each far from opponents
+      const players = [...lobby.players.values()];
+      for (const p of players) {
+        const opponent = players.find(o => o.team !== p.team);
+        const spawn = getRandomSpawnFarFrom(opponent ? opponent.position : null);
         p.position = { ...spawn };
         p.health = 100;
         p.alive = true;
@@ -119,7 +146,12 @@ export class GameServer {
         else teamBCount++;
       }
       const team = teamACount <= teamBCount ? TEAMS.A : TEAMS.B;
-      const spawn = team === TEAMS.A ? SPAWN_A : SPAWN_B;
+      // Find opponent position (if any) and spawn far from them
+      let opponentPos = null;
+      for (const p of lobby.players.values()) {
+        if (p.team !== team) { opponentPos = p.position; break; }
+      }
+      const spawn = getRandomSpawnFarFrom(opponentPos);
 
       const player = {
         id: socket.id,
