@@ -172,6 +172,10 @@ export class GameServer {
       const player = lobby.players.get(socket.id);
       if (!player) return;
 
+      // Don't accept position updates from dead players — prevents stale
+      // coords overwriting spawn position during the respawn delay
+      if (!player.alive) return;
+
       if (data.position) {
         player.position = data.position;
       }
