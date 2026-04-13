@@ -99,7 +99,7 @@ export class GameServer {
         const opponent = players.find(o => o.team !== p.team);
         const spawn = getRandomSpawnFarFrom(opponent ? opponent.position : null);
         p.position = { ...spawn };
-        p.health = 100;
+        p.health = 300;
         p.alive = true;
         this.io.to(lobbyId).emit('player_respawn', {
           id: p.id,
@@ -161,7 +161,7 @@ export class GameServer {
         team,
         position: { ...spawn },
         rotation: { x: 0, y: 0 },
-        health: 100,
+        health: 300,
         alive: true,
         weapon: 0,
         kills: 0,
