@@ -43,6 +43,7 @@ const WEAPONS = {
   GRENADE: { name: 'Frag Grenade', slot: 3, damage: 100, range: 15 },
   SNIPER: { name: 'Sniper Rifle', slot: 4, damage: 50, range: 150 },
   LASER: { name: 'Laser Rifle', slot: 5, damage: 40, range: 120 },
+  KATANA: { name: 'Katana', slot: 2, damage: 140, range: 3.2 },
 };
 
 function calculateDamage(baseDamage, distance, maxRange, noFalloff = false) {
@@ -227,7 +228,7 @@ export class GameServer {
       const shooter = lobby.players.get(socket.id);
       if (!shooter || !shooter.alive) return;
 
-      const weaponKeys = ['AR', 'PISTOL', 'KNIFE', 'GRENADE', 'SNIPER', 'LASER'];
+      const weaponKeys = ['AR', 'PISTOL', 'KNIFE', 'GRENADE', 'SNIPER', 'LASER', 'KATANA'];
       const weaponKey = weaponKeys[data.weapon] || 'AR';
       const weapon = WEAPONS[weaponKey];
 
@@ -261,8 +262,8 @@ export class GameServer {
           let isHeadshot = false;
           console.log(`[Hit] ${shooter.name} → ${target.name} with ${weaponKey} at ${data.distance.toFixed(1)}m, base dmg=${damage.toFixed(1)}, target hp=${target.health}`);
 
-          // Backstab
-          if (weaponKey === 'KNIFE' && data.distance <= weapon.range && data.direction && target.rotation) {
+          // Backstab (knife & katana — any melee)
+          if ((weaponKey === 'KNIFE' || weaponKey === 'KATANA') && data.distance <= weapon.range && data.direction && target.rotation) {
             const atkX = data.direction.x || 0;
             const atkZ = data.direction.z || 0;
             const targetYaw = target.rotation.y || 0;
